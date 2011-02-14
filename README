@@ -2,13 +2,29 @@
   # SQLgrey - a postfix greylisting policy server #
   #################################################
 
+SQLgrey is authored by Michal Ludvig.
+
+This is a fork of SQLgrey (cloned from it's git repo on sourceforge on 2011-02-11) which adds:
+- compatibility with syslog on Solaris
+- SPF auto whitelist
+
+The changes I've applied to implement the above were originally written by Frederic Van De Velde and were reposted to the sqlgrey-users list by Michal Ludvig on 26 April 2007. See: http://permalink.gmane.org/gmane.mail.postfix.sqlgrey/1033
+
+SQLgrey Homepage: http://sqlgrey.sourceforge.net/
+SQLgrey Primary git repo: git://sqlgrey.git.sourceforge.net/gitroot/sqlgrey/sqlgrey
+
+This Fork: https://github.com/jessereynolds/sqlgrey
+This Fork's git repo: git://github.com/jessereynolds/sqlgrey.git
 
 Requires :
 
 - Perl
 - Net::Server (Perl Module)
 - IO::Multiplex (Perl Module)
-- perl-DBI (Perl Module)
+- DBI (Perl Module)
+- Unix::Syslog (Perl Module)
+- Mail::SPF::Query (Perl Module)
+
 - Postfix 2.1
 
 Documentation :
@@ -18,3 +34,4 @@ Documentation :
 - the HOWTO
 - the README.* files
 - the default sqlgrey.conf file
+

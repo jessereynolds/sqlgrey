@@ -31,7 +31,8 @@ use Pod::Usage;
 use Getopt::Long 2.25 qw(:config posix_default no_ignore_case);
 use Net::Server::Multiplex;
 use DBI;
-use Math::BigInt;
+use Unix::Syslog qw(:macros :subs);
+use Mail::SPF::Query;
 
 use POSIX ':sys_wait_h';
 
@@ -82,8 +83,10 @@ $dflt{optmethod}          = 'none'; # or 'optin' or 'optout'
 $dflt{db_cleandelay}	  = 30 * 60;
 $dflt{clean_method}       = 'sync';
 $dflt{admin_mail}         = 'postmaster';
-$dflt{log_ident}          = undef;
+$dflt{log_ident}          = 'postfix/sqlgrey';
+$dflt{log_facility}       = 'mail';
 $dflt{reject_code}	  = '450';
+$dflt{spf_autowhitelist}  = 0;
 
 $dflt{discrimination} 	  = 0;
 $dflt{discrimination_add_rulenr} = 0;
@@ -100,6 +103,8 @@ $dflt{log} = { # note values here are not used
 	      'system' => 2,
 	      'conf' => 2,
 	      'other' => 2,
+	'Net::Server' => 2,
+	'spf' => 2,
 	     };
 
 # Default configuration file
@@ -122,21 +127,61 @@ my $reload = 0; # non-zero signals a regexps/whitelists reload request
 my $ref_to_sqlgrey; # we need this global var to access sqlgrey functions
                     # in signal handlers
 
+sub open_log() {
+  my($id) = $dflt{log_ident};
+  my($fac) = $dflt{log_facility};
+
+  $fac =~ /^[A-Za-z0-9_]+\z/
+      or die "Suspicious syslog facility name: $fac";
+    my($syslog_facility_num) = eval("LOG_\U$fac");
+    $syslog_facility_num =~ /^\d+\z/
+      or die "Unknown syslog facility name: $fac";
+    openlog($id, LOG_PID | LOG_NDELAY, $syslog_facility_num);
+}
+
+sub close_log() {
+    closelog();
+}
+
 sub mylog($$$$) {
     my ($self, $logtype, $loglevel, $message) = @_;
 
     $message =~ s/%/%%/g; # protect sprintf used by Syslog
     if (!defined $self->{sqlgrey}{log}{$logtype}) {
-	# Protect against syslog going down
-	eval { $self->log($loglevel, "Unknown logtype ($logtype): $message"); };
+	write_log($loglevel, "Unknown logtype ($logtype): $message");
     }
     if ($loglevel <= $self->{sqlgrey}{log}{$logtype}) {
 	# workaround: we can't disable the TCP connections
 	# logs if we use log_level 4 so log_level is capped by default
 	$loglevel = $loglevel > $self->{server}{log_level} ?
 	    $self->{server}{log_level} : $loglevel;
-	eval { $self->log($loglevel, "$logtype: $message"); }
+	write_log($loglevel, "$logtype: $message");
     }
+}
+
+sub write_log($$$;@) {
+  my($level,$errmsg,@args) = @_;
+  # treat $errmsg as sprintf format string if additional arguments provided
+  if (@args && index($errmsg,'%') >= 0) { $errmsg = sprintf($errmsg,@args) }
+  # nothing: O, errors only: 0, warnings: 1, normal: 2, verbose: 3, debug: 4
+  my($prio) = LOG_NOTICE;
+
+  if    ($level == 4) { $prio = LOG_DEBUG   }
+  elsif ($level == 3) { $prio = LOG_INFO    }
+  elsif ($level == 2) { $prio = LOG_NOTICE  }
+  elsif ($level == 1) { $prio = LOG_WARNING }
+  elsif ($level == 0) { $prio = LOG_ERR     }
+
+  my($pre) = "";
+  my($logline_size) = 980;  # less than  (1023 - prefix)
+
+  while (length($pre)+length($errmsg) > $logline_size) {
+    my($avail) = $logline_size - length($pre . "...");
+    syslog($prio, "%s", $pre . substr($errmsg,0,$avail) . "...");
+    $pre = "...";  $errmsg = substr($errmsg, $avail);
+  }
+
+  syslog($prio, "%s", $errmsg);
 }
 
 # Send mails
@@ -1207,6 +1252,40 @@ sub normalize_rcpt($$) {
 ##########################################
 ## Grey listing related database access ##
 ##########################################
+
+#########
+## SPF
+
+## verify if SPF is valid
+
+sub is_in_spf($$$$$) {
+    #$sender_name,$sender_domain,$addr,$fqdn
+    my ($self, $sender_name, $sender_domain, $ipaddr, $fqdn) = @_;
+
+    $self->mylog('spf', 4,
+         "doing SFP query: ip($ipaddr) sender($sender_name\@$sender_domain) helo($fqdn)");
+
+    my $query = new Mail::SPF::Query(
+       ip => $ipaddr,
+       sender=> $sender_name .'@'. $sender_domain,
+       helo=> $fqdn,
+       trusted=>0,
+       guess=>0
+    );
+
+    my ($result,$smtp_comment,$header_comment,$spf_record) = $query->result();
+    $self->mylog('spf', 4,"SPF record:". $spf_record);
+    $self->mylog('spf', 4,"  smtp_comment: ". $smtp_comment);
+    $self->mylog('spf', 4,"  header_comment: ". $header_comment);
+
+#     my ($result,           # pass | fail | softfail | neutral | none | error | unknown [mechanism]
+#         $smtp_comment,     # "please see http://www.openspf.org/why.html?..."  when rejecting, return this string to the SMTP client
+#         $header_comment,   # prepend_header("Received-SPF" => "$result ($header_comment)")
+#         $spf_record,       # "v=spf1 ..." original SPF record for the domain
+#        ) = $query->result();
+
+    return $result =~ /^pass$/;
+}
 
 #########
 ## AWLs
@@ -2334,6 +2413,16 @@ sub smtpd_access_policy($$)
 		: 'dunno';
     }
 
+    # SPF auto-whitelist
+    if ($dflt{spf_autowhitelist}) { # if SPF autowhitelist is enabled
+      if ($self->is_in_spf($sender_name,$sender_domain,$addr,$fqdn)) {
+        $self->mylog('spf', 2,"Valid SPF: $sender_name\@$sender_domain, $addr($fqdn) -> $recipient");
+        return $self->{sqlgrey}{prepend} ?
+	    $prepend . 'domain auto-whitelisted via SPF by ' . $software
+		: 'dunno';
+      }
+    }
+
     # optin/optout checks
     if (! $self->greylisting_active($recipient)) {
 	$self->mylog('optin', 3, "greylisting inactive for $recipient");
@@ -2549,6 +2638,9 @@ sub main()
     if ($opt{man})     { pod2usage(-exitstatus => 0, -verbose => 2) }
     if ($opt{version}) { print "sqlgrey $VERSION\n"; exit(0) }
 
+    # open the log
+    open_log();
+
     # Read the config file
     read_conffile($opt{configfile});
 
@@ -2612,8 +2704,8 @@ sub main()
             pid_file        => $opt{daemonize} ? $dflt{pidfile} : undef,
 	    # ugly hack: 4 will triger Net::Server debugs
             log_level       => $dflt{loglevel} > 2 ? $dflt{loglevel} : 2,
-            log_file        => $opt{daemonize} ? 'Sys::Syslog' : undef,
-            syslog_facility => 'mail',
+            log_file        => undef,
+            syslog_facility => defined $dflt{log_facility} ? $dflt{log_facility} : 'mail',
             syslog_logsock  => 'unix',
             syslog_ident    => defined $dflt{log_ident} ? $dflt{log_ident} :
 		                                          # process name
@@ -2675,6 +2767,24 @@ sub main()
 ## Net::Server::Multiplex methods ##
 ####################################
 
+### log routine Net::Server hook
+### (Sys::Syslog MUST NOT be specified as a value of 'log_file'!)
+#
+# Redirect Net::Server logging to use SQLgrey mylog().
+# The main reason is that Net::Server uses Sys::Syslog
+# (and has two bugs in doing it, at least the Net-Server-0.82),
+# and SQLgrey uses Unix::Syslog.
+sub write_to_log_hook {
+  my($self,$level,$msg) = @_;
+  my($prop) = $self->{server};
+  local $SIG{CHLD} = 'DEFAULT';
+  $level = 0 if $level < 0;  $level = 4 if $level > 4;
+  chomp($msg);  # just call SQLgrey' traditional logging
+  $self->mylog('Net::Server',$level, $msg);
+  1;
+}
+
+
 # Called before the first query comes.
 sub pre_loop_hook() {
     my $self = shift;
@@ -2684,8 +2794,8 @@ sub pre_loop_hook() {
 
     # be sure to put in syslog any warnings / fatal errors
     if($self->{server}{log_file} eq 'Sys::Syslog') {
-        $SIG{__WARN__} = sub {Sys::Syslog::syslog('warning', "warning: $_[0]")};
-        $SIG{__DIE__}  = sub {Sys::Syslog::syslog('crit', "fatal: $_[0]");
+        $SIG{__WARN__} = sub {Unix::Syslog::syslog('warning', "warning: $_[0]")};
+        $SIG{__DIE__}  = sub {Unix::Syslog::syslog('crit', "fatal: $_[0]");
 			      die @_;};
     }
 
