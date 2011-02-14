@@ -26,3 +26,12 @@ make install
 
 
 Now go read HOWTO..
+
+
+SOLARIS:
+--------
+Once installed and configured, you can have Solaris' Service Management Framework start up SQLgrey and ensure it stays running:
+
+cd smf
+svccfg import sqlgrey-smf-manifest.xml
+
