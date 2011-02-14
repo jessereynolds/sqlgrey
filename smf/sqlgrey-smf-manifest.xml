@@ -1,0 +1,109 @@
+<?xml version="1.0"?>
+<!DOCTYPE service_bundle SYSTEM "/usr/share/lib/xml/dtd/service_bundle.dtd.1">
+
+<service_bundle type='manifest' name='sqlgrey'>
+
+<service
+	name='network/sqlgrey'
+	type='service'
+	version='1'>
+
+	<single_instance />
+
+	<dependency
+	    name='fs-local'
+	    grouping='require_all'
+	    restart_on='none'
+	    type='service'>
+		<service_fmri value='svc:/system/filesystem/local' />
+	</dependency>
+
+	<dependency
+	    name='network-service'
+	    grouping='require_all'
+	    restart_on='none'
+	    type='service'>
+		<service_fmri value='svc:/network/service' />
+	</dependency>
+
+	<dependency
+	    name='name-services'
+	    grouping='require_all'
+	    restart_on='refresh'
+	    type='service'>
+		<service_fmri value='svc:/milestone/name-services' />
+	</dependency>
+
+	<dependency
+	    name='identity'
+	    grouping='optional_all'
+	    restart_on='refresh'
+	    type='service'>
+		<service_fmri value='svc:/system/identity:domain' />
+	</dependency>
+
+	<dependency
+	    name='system-log'
+	    grouping='optional_all'
+	    restart_on='none'
+	    type='service'>
+		<service_fmri value='svc:/system/system-log' />
+	</dependency>
+
+	<instance name='sqlgrey' enabled='true'>
+
+		<dependency
+		    name='master-config'
+		    grouping='require_all'
+		    restart_on='refresh'
+		    type='path'>
+			<service_fmri
+			    value='file:///etc/sqlgrey/sqlgrey.conf' />
+		</dependency>
+
+		<dependent
+			name='sqlgrey_multi-user'
+			grouping='optional_all'
+			restart_on='none'>
+				<service_fmri
+				    value='svc:/milestone/multi-user' />
+		</dependent>
+
+		<exec_method
+			type='method'
+			name='start'
+			exec='/usr/sbin/sqlgrey -d'
+			timeout_seconds='10' />
+
+		<exec_method
+			type='method'
+			name='stop'
+			exec='/usr/sbin/sqlgrey --kill'
+			timeout_seconds='10' />
+
+		<exec_method
+			type='method'
+			name='refresh'
+			exec='/usr/sbin/sqlgrey --kill ; sleep 3 ; /usr/sbin/sqlgrey'
+			timeout_seconds='10' />
+
+		<property_group name='startd' type='framework'>
+			<propval name='ignore_error' type='astring'
+			    value='core,signal' />
+		</property_group>
+
+		<template>
+			<common_name>
+				<loctext xml:lang='C'>
+				SQLgrey postfix policy server
+				</loctext>
+			</common_name>
+		</template>
+
+	</instance>
+
+	<stability value='Unstable' />
+
+</service>
+
+</service_bundle>
