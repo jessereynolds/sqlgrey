@@ -2,7 +2,7 @@
   # SQLgrey - a postfix greylisting policy server #
   #################################################
 
-SQLgrey is authored by Michal Ludvig.
+SQLgrey is originally by Lionel Bouton, based in turn on postgrey.
 
 This is a fork of SQLgrey (cloned from it's git repo on sourceforge on 2011-02-11) which adds:
 - compatibility with syslog on Solaris
