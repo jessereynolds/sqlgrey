@@ -1,3 +1,7 @@
+* Mon Feb 14 2011 Jesse Reynolds
+ - forked SQLgrey (cloned from it's git repo on sourceforge on 2011-02-11)
+ - compatibility with syslog on Solaris
+ - SPF auto whitelist
 * Mon Feb 01 2010 Michal Ludvig <mludvig@logix.net.nz>
  - Upgraded VERSION to 1.8.0-rc2
  - Reverted GNU sed syntax in Makefile
